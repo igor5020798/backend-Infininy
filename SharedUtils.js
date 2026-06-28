@@ -4,9 +4,9 @@ const dotenv = require("dotenv");
 dotenv.config();
 
 function generateAuthPayload() {
-  const salt = process.env.LeagueSalt;
+  const salt = process.env.Salt;
   if (!salt) {
-    throw new Error("LeagueSalt não definida no .env");
+    throw new Error("LuckxSalt não definida no .env");
   }
 
   return shared;

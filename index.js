@@ -2,7 +2,9 @@ require("dotenv").config();
 const express = require("express");
 const Console = require("./ConsoleUtils");
 const CryptoUtils = require("./CryptoUtils");
-const SharedUtils = require("./SharedUtils");
+const bodyParser = require('body-parser');
+const AntiCheat = require('./AntiCheatUtils');
+const { handlePartyUpdate } = require("./BeastRoomUtils");
 
 const {
   BackendUtils,
@@ -20,71 +22,88 @@ const {
   TournamentController,
   SocialController,
   EventsController,
+  CheatController,
+  CreatorCodeController,
   authenticate,
   errorControll,
   sendShared,
   OnlineCheck,
-  VerifyPhoton
+  VerifyPhoton,
+  getAppId,
+  sendADM,
+  Database
 } = require("./BackendUtils");
 
 const app = express();
-const Title = "StumbleInfinity 1.0 Backend " + process.env.version;
+const Title = "Nxz9 Backend";
 const PORT = process.env.PORT || 8080;
-
+const IsMaintenanceActive = false;
+app.use(express.text({ type: "*/*" }));
+app.use((req, res, next) => {
+  if (typeof req.body === "string") {
+    try {
+      req.body = JSON.parse(req.body);
+    } catch {
+    }
+  }
+  next();
+});
+app.post("/party/update", handlePartyUpdate);
 app.use(express.json());
+app.get('/user/tournaments', async (req, res) => {
+    try {
+        const userId = parseInt(req.query.userId);
+        const deviceId = req.query.deviceId;
+        if (!userId && !deviceId) return res.status(400).json({ error: 'userId or deviceId required' });
+        const user = userId
+            ? await UserModel.findById(userId)
+            : await UserModel.findByDeviceId(deviceId);
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        res.json({ tournamentsWon: user.tournamentsWon ?? 0 });
+    } catch (err) {
+        Console.error('Tournaments', 'Fetch error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+app.get("/game-events/me", EventsController.getActive);
+app.get("/game-events/list", EventsController.getActive);
+app.get("/game-events/all", EventsController.getActive);
+app.get("/game-events/v1/list", EventsController.getActive);
+app.get("/game-events/v2/list", EventsController.getActive);
+app.post("/game-events/join/", EventsController.join);
+
+
+app.use((req, res, next) => {
+ 
+  if (IsMaintenanceActive) {
+    return res.status(503).json({
+        status: "Maintenance",
+        message: "servers OFF"
+      });
+  }
+
+  
+  next();
+});
+app.get('/version/get', (req, res) => {
+  const version = '1.6.1';
+  const encrypted = CryptoUtils.Encrypt(version);
+  res.json(encrypted);
+});
 app.use(authenticate);
 
-class CrownController {
-  static async updateScore(req, res) {
-    try {
-      const { deviceid, username, country } = req.body;
-      if (!deviceid || !username) {
-        return res.status(400).json({ error: "Missing fields" });
-      }
-
-      let user = await UserModel.findByDeviceId(deviceid);
-      if (!user) {
-        return res.status(404).json({ error: "User not found" });
-      }
-
-      const newCrowns = (user.crowns || 0) + 1;
-      await UserModel.update(user.stumbleId, { crowns: newCrowns });
-
-      res.json({ success: true, crowns: newCrowns });
-    } catch (err) {
-      console.error("Error updating crowns:", err);
-      res.status(500).json({ error: "Internal server error" });
-    }
-  }
-
-  static async list(req, res) {
-    try {
-      const { country, start, count } = req.query;
-
-      const data = await UserModel.GetHighscore(
-        "crowns",
-        country || "",
-        start || 0,
-        count || 50
-      );
-
-      res.json(data);
-    } catch (err) {
-      console.error("Error fetching crown highscores:", err);
-      res.status(500).json({ error: "Internal server error" });
-    }
-  }
-}
 
 app.post("/photon/auth", VerifyPhoton);
+app.get("/photon/get", getAppId);
 app.get("/onlinecheck", OnlineCheck);
-
 app.get("/matchmaking/filter", MatchmakingController.getMatchmakingFilter);
-
 app.post('/user/login', UserController.login);
 app.get('/user/config', sendShared);
 app.get('/usersettings', UserController.getSettings);
 app.post('/user/updateusername', UserController.updateUsername);
+app.post('/user/update', UserController.updateUsername);
+app.put('/user/v2/updateusername', UserController.updateUsername);
 app.get('/user/deleteaccount', UserController.deleteAccount);
 app.post('/user/linkplatform', UserController.linkPlatform);
 app.post('/user/unlinkplatform', UserController.unlinkPlatform);
@@ -92,28 +111,27 @@ app.get("/shared/:version/:type", sendShared);
 app.post('/user/profile', UserController.getProfile);
 app.post('/user-equipped-cosmetics/update', UserController.updateCosmetics);
 app.post('/user/cosmetics/addskin', UserController.addSkin);
-app.post('/user/cosmetics/setequipped', UserController.setEquippedCosmetic);
-
+app.post('/user/inventory/selection', UserController.setEquippedCosmetic);
 app.get('/round/finish/:round', RoundController.finishRound);
 app.get('/round/finishv2/:round', RoundController.finishRound);
+app.post("/round/finish/v3/:region/:appid/:jwt", RoundController.finishRound)
+app.post('/round/customroundfinish/:region/:appid/:naosei', RoundController.finishCustomRound);
 app.post('/round/finish/v4/:round', RoundController.finishRoundV4);
 app.post('/round/eventfinish/v4/:round', RoundController.finishRoundV4);
-
+app.post('/round/eventfinish/v3/:region/:appid/:jwt/:eventId', RoundController.finishEventRoundV3);
 app.get('/battlepass', BattlePassController.getBattlePass);
 app.post('/battlepass/claimv3', BattlePassController.claimReward);
-app.post('/battlepass/purchase', BattlePassController.purchaseBattlePass);
+app.get('/battlepass/purchasev2', BattlePassController.purchaseBattlePass);
 app.post('/battlepass/complete', BattlePassController.completeBattlePass);
-
 app.get('/economy/purchase/:item', EconomyController.purchase); 
-app.get('/economy/purchasegasha/:itemId/:count', EconomyController.purchaseGasha); 
+app.get('/economy/purchasegacha/:itemId/:count', EconomyController.purchaseGasha); 
 app.get('/economy/purchaseluckyspin', EconomyController.purchaseLuckySpin); 
-app.get('/economy/purchasedrop/:itemId/:count', EconomyController.purchaseLuckySpin); 
+app.get('/economy/purchasedrop/:itemId/:count', EconomyController.purchaseDrop); 
+app.post('/economy/purchaseluckyspinwheel', EconomyController.purchaseLuckySpinWheel);
 app.post('/economy/:currencyType/give/:amount', EconomyController.giveCurrency); 
-
 app.get('/missions', MissionsController.getMissions);
 app.post('/missions/:missionId/rewards/claim/v2', MissionsController.claimMissionReward);
 app.post('/missions/objective/:objectiveId/:milestoneId/rewards/claim/v2', MissionsController.claimMilestoneReward);
-
 app.post('/friends/request/accept', FriendsController.add);
 app.delete('/friends/:UserId', FriendsController.remove);
 app.get('/friends', FriendsController.list);
@@ -123,62 +141,41 @@ app.post('/friends/accept', FriendsController.accept);
 app.post('/friends/request/decline', FriendsController.reject);
 app.post('/friends/cancel', FriendsController.cancel);
 app.get('/friends/request', FriendsController.pending);
-
 app.get("/game-events/me", EventsController.getActive);
-
-app.get("/news/getall", NewsController.GetNews);
-
+app.post("/game-events/join/", EventsController.join);
+app.get("/user/news", NewsController.GetNews);
+app.post("/news", NewsController.CreateNews);
 app.post('/analytics', AnalyticsController.analytic);
-
-app.post("/update-crown-score", CrownController.updateScore);
-app.get("/highscore/crowns/list", CrownController.list);
-
-app.get('/highscore/:type/list/', async (req, res, next) => {
-  try {
-    const { type } = req.params;
-    const { start = 0, count = 100, country = 'global' } = req.query;
-
-    const startNum = parseInt(start, 10);
-    const countNum = parseInt(count, 10);
-
-    if (!type) {
-      return res.status(400).json({ error: "O tipo é necessário" });
-    }
-
-    if (isNaN(startNum) || isNaN(countNum)) {
-      return res.status(400).json({ error: "Os parâmetros start e count devem ser números" });
-    }
-
-    const result = await UserModel.GetHighscore(type, country, startNum, countNum);
-
-    res.json(result);
-  } catch (err) {
-    next(err);
-  }
-});
-
+app.get('/highscore/:type/list/', UserController.getHighscore);
 app.get("/social/interactions", SocialController.getInteractions);
-
-app.get("/tournamentx/active", TournamentXController.getActive.bind(TournamentXController));
-app.get("/tournamentx/active/v2", TournamentXController.getActive.bind(TournamentXController));
-app.post("/tournamentx/:tournamentId/join/v2", TournamentXController.join.bind(TournamentXController));
-app.post("/tournamentx/:tournamentId/leave", TournamentXController.leave.bind(TournamentXController));
-app.post("/tournamentx/:tournamentId/finish", TournamentXController.finish.bind(TournamentXController));
+app.post("/user/cheat", CheatController.reportCheat);
+app.post("/user/creator-codes", CreatorCodeController.support);
+app.get("/user/creator-codes", CreatorCodeController.getCreator);
+app.get("/admin/autorizados", sendADM);
+app.get("/tournamentx/active", TournamentXController.getActive);
+app.get("/tournamentx/active/v2", TournamentXController.getActive);
+app.get("/tournamentx/seasons", TournamentXController.getSeasons);
+app.get("/tournamentx/season/:seasonId/progress", TournamentXController.getSeasonProgress);
+app.post("/tournamentx/season/:seasonId/claim/:awardId", TournamentXController.claimSeasonReward);
+app.post("/tournamentx/:tournamentId/join", TournamentXController.join);
+app.post("/tournamentx/:tournamentId/join/v2", TournamentXController.join);
+app.post("/tournamentx/:tournamentId/leave", TournamentXController.leave);
+app.post("/tournamentx/:tournamentId/leave/v2", TournamentXController.leave);
+app.post("/round/tournament/finish/v2", TournamentXController.finish); 
 
 app.get("/api/v1/ping", async (req, res) => {
   res.status(200).send("OK");
 });
-app.post("/api/v1/userLoginExternal", TournamentController.login);
-app.get("/api/v1/tournaments", TournamentController.getActive);
-
-app.use(errorControll);
 
 app.listen(PORT, () => {
   const currentDate = new Date().toLocaleString().replace(",", " |");
   console.clear();
-  Console.log(
-    "Server",
-    `[${Title}] | ${currentDate} | ${CryptoUtils.SessionToken()}`
-  );
-  Console.log("Server", `Listening on port ${PORT}`);
+  console.clear();
+  Console.log(`Server ${process.env.version}`, `[${Title}] | ${currentDate} | ${CryptoUtils.SessionToken()}`);
+  Console.log(`Server ${process.env.version}`, `Current port ${PORT}`);
+  const encrypted = CryptoUtils.Encrypt("Testing Encrypt");
+  Console.log("Encrypted:", encrypted);
+  Console.log("Encrypted length:", encrypted.length);
+  const decrypted = CryptoUtils.Decrypt(encrypted);
+  Console.log("Decrypted:", decrypted);
 });
